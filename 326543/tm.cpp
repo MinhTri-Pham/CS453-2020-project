@@ -95,7 +95,7 @@ struct region {
 // Represents a memory segment
 struct segment {
     void* start; // Start of segment
-    map<void*, versioned_lock*> versioned_locks; // Per word versioned locks
+    map<void*, versioned_lock_t*> versioned_locks; // Per word versioned locks
     size_t size; // SIze of segment
 };
 
@@ -279,7 +279,7 @@ bool tm_end(shared_t shared, tx_t tx) noexcept {
     while (wSetIt != transaction->write_set.end()) {
         void* write_addr = wSetIt->first;
         segment_t* write_segment = wSetIt->second->segment;
-        if (write_segment->versioned_locks[write_addr]->lock->try_lock_for(acquire_time)) {
+        if (write_segment->versioned_locks[write_addr]->lock.try_lock_for(acquire_time)) {
             acq_lock_locations.insert({write_addr, write_segment});
             write_segment->versioned_locks[write_addr]->is_locked.store(true);
         }
@@ -308,22 +308,24 @@ bool tm_end(shared_t shared, tx_t tx) noexcept {
     }
 
     // Commit write set 
-    map<void*, write_object_t*>::iterator wSetIt = transaction->write_set.begin();
+    wSetIt = transaction->write_set.begin();
     while (wSetIt != transaction->write_set.end()) {
-        void* write_addr = wSetIt->first;
-        segment_t* write_seg = wSetIt->second->segment;
-        // Write the new values
-        // Set version of lock at this location to wv and clear its locked bit
-        memcpy(write_addr, wSetIt->second->value, region->align);
-        write_seg->versioned_locks[write_addr]->version.store(transaction->wv);
-        write_seg->versioned_locks[write_addr]->is_locked.store(false);
-        wSetIt++;
+        // Write new values for writes/allocs
+        if (!wSetIt->second->is_free) {
+            void* write_addr = wSetIt->first;
+            segment_t* write_seg = wSetIt->second->segment;
+            // Set version of lock at this location to wv and clear its locked bit
+            memcpy(write_addr, wSetIt->second->value, region->align);
+            write_seg->versioned_locks[write_addr]->version.store(transaction->wv);
+            write_seg->versioned_locks[write_addr]->is_locked.store(false);
+            wSetIt++;
+        }
     }
     // Add segments allocated by transaction to shared region
     for (auto seg : transaction->to_alloc) {
         region->segments.insert(seg);
     }
-    // Add segments deallocated by transaction to shared region
+    // Free segments deallocated by transaction to shared region
     for (auto seg : transaction->to_alloc) {
         region->segments.erase(seg);
     }
