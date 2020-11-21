@@ -154,7 +154,7 @@ void free_locks(map<void*, segment_t*> acq_lock_locations) {
             void* adrr = locksIt->first;
             segment_t* write_seg = locksIt->second;
             write_seg->versioned_locks[adrr]->is_locked.store(false);
-            write_seg->versioned_locks[adrr]->lock->unlock();
+            write_seg->versioned_locks[adrr]->lock.unlock();
 
     }        
 }
@@ -167,7 +167,7 @@ void free_locks(map<void*, segment_t*> acq_lock_locations) {
  * @param align Alignment (in bytes, must be a power of 2) that the shared memory region must support
  * @return Opaque shared memory region handle, 'invalid_shared' on failure
 **/
-shared_t tm_create(size_t size as(unused), size_t align as(unused)) {
+shared_t tm_create(size_t size, size_t align) noexcept {
     region_t* region = new region_t(); 
     if (unlikely(!region)) {
         return invalid_shared;
@@ -206,7 +206,7 @@ shared_t tm_create(size_t size as(unused), size_t align as(unused)) {
 /** Destroy (i.e. clean-up + free) a given shared memory region.
  * @param shared Shared memory region to destroy, with no running transaction
 **/
-void tm_destroy(shared_t shared as(unused)) {
+void tm_destroy(shared_t shared) noexcept {
     region_t* region = (region_t*) shared;
     for (auto seg : region->segments){
         // Delete locks
@@ -229,7 +229,7 @@ void tm_destroy(shared_t shared as(unused)) {
  * @param shared Shared memory region to query
  * @return Start address of the first allocated segment
 **/
-void* tm_start(shared_t shared as(unused)) {
+void* tm_start(shared_t shared) noexcept {
     return ((region_t*) shared)->start;
 }
 
@@ -237,7 +237,7 @@ void* tm_start(shared_t shared as(unused)) {
  * @param shared Shared memory region to query
  * @return First allocated segment size
 **/
-size_t tm_size(shared_t shared as(unused)) {
+size_t tm_size(shared_t shared) noexcept {
     return ((region_t*) shared)->size;
 }
 
@@ -245,7 +245,7 @@ size_t tm_size(shared_t shared as(unused)) {
  * @param shared Shared memory region to query
  * @return Alignment used globally
 **/
-size_t tm_align(shared_t shared as(unused)) {
+size_t tm_align(shared_t shared) noexcept {
     return ((region_t*) shared)->align;
 }
 
@@ -254,7 +254,7 @@ size_t tm_align(shared_t shared as(unused)) {
  * @param is_ro  Whether the transaction is read-only
  * @return Opaque transaction ID, 'invalid_tx' on failure
 **/
-tx_t tm_begin(shared_t shared as(unused), bool is_ro as(unused)) {
+tx_t tm_begin(shared_t shared, bool is_ro) noexcept {
     transaction_t* tx = new transaction_t();
     tx->is_ro = is_ro;
     tx->rv = version_clock.load();
@@ -266,7 +266,7 @@ tx_t tm_begin(shared_t shared as(unused), bool is_ro as(unused)) {
  * @param tx     Transaction to end
  * @return Whether the whole transaction committed
 **/
-bool tm_end(shared_t shared as(unused), tx_t tx as(unused)) {
+bool tm_end(shared_t shared, tx_t tx) noexcept {
     region_t* region = (region_t*) shared;
     transaction_t* transaction = (transaction_t*) tx;
     // If transaction is read-only, commit immediately (all necessary checks have already been made in tm_read)
@@ -338,7 +338,7 @@ bool tm_end(shared_t shared as(unused), tx_t tx as(unused)) {
  * @param target Target start address (in a private region)
  * @return Whether the whole transaction can continue
 **/
-bool tm_read(shared_t shared as(unused), tx_t tx as(unused), void const* source as(unused), size_t size as(unused), void* target as(unused)) {
+bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* target) noexcept{
     region_t* region = (region_t*) shared;
     transaction_t* transaction = (transaction_t*) tx;
     // Iterate through each read memory word
@@ -380,7 +380,7 @@ bool tm_read(shared_t shared as(unused), tx_t tx as(unused), void const* source 
  * @param target Target start address (in the shared region)
  * @return Whether the whole transaction can continue
 **/
-bool tm_write(shared_t shared as(unused), tx_t tx as(unused), void const* source as(unused), size_t size as(unused), void* target as(unused)) {
+bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* target) noexcept {
     region_t* region = (region_t*) shared;
     transaction_t* transaction = (transaction_t*) tx;
     // Iterate through each word in the source and store address, segment and value written into the write set
@@ -412,7 +412,7 @@ bool tm_write(shared_t shared as(unused), tx_t tx as(unused), void const* source
  * @param target Pointer in private memory receiving the address of the first byte of the newly allocated, aligned segment
  * @return Whether the whole transaction can continue (success/nomem), or not (abort_alloc)
 **/
-Alloc tm_alloc(shared_t shared as(unused), tx_t tx as(unused), size_t size as(unused), void** target as(unused)) {
+Alloc tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) noexcept {
     region_t* region = (region_t*) shared;
     transaction_t* trans = (transaction_t*) tx;
     segment_t* alloc_seg = new segment_t();
@@ -452,7 +452,7 @@ Alloc tm_alloc(shared_t shared as(unused), tx_t tx as(unused), size_t size as(un
  * @param target Address of the first byte of the previously allocated segment to deallocate
  * @return Whether the whole transaction can continue
 **/
-bool tm_free(shared_t shared as(unused), tx_t tx as(unused), void* target as(unused)) {
+bool tm_free(shared_t shared, tx_t tx, void* target) noexcept {
     region_t* region = (region_t*) shared;
     transaction_t* transaction = (transaction_t*) tx;
     // Find the segment we want to free
