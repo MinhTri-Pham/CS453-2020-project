@@ -24,6 +24,7 @@
 #include <string.h>
 #include <vector>
 #include <mutex>
+#include <shared_mutex>
 
 // Internal headers
 #include <tm.hpp>
@@ -117,7 +118,7 @@ struct write_log {
 // --------------- Helper functions ----------------------------------------- //
 
 // Find target segment for read/write/free
-segment_t* find_seg(region_t* region, transaction_t* tx, const void* addr) {
+segment_t* find_seg(region_t* region, const void* addr) {
     // Search in shared memory (includes allocated segments by any transactions)
     for(auto seg : region->segments) {
         if(addr >= seg->start && addr < (char*)seg->start + seg->size) {
@@ -135,25 +136,23 @@ bool have_lock(transaction_t* tx, shared_mutex* lock) {
     // For read-only transactions, no need to go further
     if (tx->is_ro) return false;
 
-    for (auto read_lock : tx->write_locks) {
-        if (read_lock == lock) return true;
+    for (auto write_lock : tx->write_locks) {
+        if (write_lock == lock) return true;
+    }
+
+    for (auto alloc_lock : tx->alloc_locks) {
+        if (alloc_lock == lock) return true;
+    }
+
+    for (auto free_lock : tx->free_locks) {
+        if (free_lock == lock) return true;
     }
 
     return false;
 }
 
-// Rollback a transaction when it fails
-void rollback(transaction_t* tx, region_t* region) {
-    // Rollback writes
-    for (auto write_log : tx->write_logs) {
-        memcpy(write_log->address, write_log->old_data, write_log->size);
-    }
-    // Roll back allocations
-    free_segments(region, tx->alloc_segments);
-}
-
 // Free segments
-void free_segments(region_t* region, vector<segment*> to_free) {
+void free_segs(region_t* region, vector<segment*> to_free) {
     for (auto free_seg : to_free) {
         int index = 0;
         for (auto seg : region->segments) {
@@ -164,6 +163,16 @@ void free_segments(region_t* region, vector<segment*> to_free) {
             else index++;
         }        
     }
+}
+
+// Rollback a transaction when it fails
+void rollback(transaction_t* tx, region_t* region) {
+    // Rollback writes
+    for (auto write_log : tx->write_logs) {
+        memcpy(write_log->address, write_log->old_data, write_log->size);
+    }
+    // Roll back allocations
+    free_segs(region, tx->alloc_segments);
 }
 
 // Cleanup a transaction
@@ -214,7 +223,6 @@ shared_t tm_create(size_t size, size_t align) noexcept {
         delete region;
         return invalid_shared;
     }
-
     memset(region->start, 0, size); // Fill first allocated segment with zeros
     // Init segment 
     first->start = region->start;
@@ -224,7 +232,6 @@ shared_t tm_create(size_t size, size_t align) noexcept {
     region->size = size;
     region->align = align;
     region->segments.push_back(first);
-
     return region;
 }
 
@@ -238,7 +245,6 @@ void tm_destroy(shared_t shared) noexcept {
         delete seg;
     }
     delete region;
-  
 }
 
 /** [thread-safe] Return the start address of the first allocated segment in the shared memory region.
@@ -286,14 +292,14 @@ tx_t tm_begin(shared_t shared, bool is_ro) noexcept {
 **/
 bool tm_end(shared_t shared, tx_t tx) noexcept {
     region_t* region = (region_t*) shared;
-    transaction_t* transaction = new transaction_t();
+    transaction_t* transaction = (transaction_t*) tx;
     // Release read locks
     for (auto lock : transaction->read_locks) {
         lock->unlock();
     }
     if (!transaction->is_ro) {
         // Free
-        free_segments(region, transaction->free_segments);
+        free_segs(region, transaction->free_segments);
         // Release write locks
         for (auto lock : transaction->write_locks) {
             lock->unlock();
@@ -311,7 +317,6 @@ bool tm_end(shared_t shared, tx_t tx) noexcept {
     }
     cleanup(transaction);
     return true;
-     
 }
 
 /** [thread-safe] Read operation in the given transaction, source in the shared region and target in a private region.
@@ -332,25 +337,16 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
         cleanup(transaction);
         return false;
     }
-    // If I acquired the lock, do the read
-    if (have_lock(transaction, seg->lock)) {
-        memcpy(target, source, size);
-        return true;
-    }
-    // Try to acquire
-    // Store read lock and perform the read if successful, otherwise rollback and abort 
-    else {
-        if (seg->lock->try_lock()) {
-            transaction->read_locks.push_back(seg->lock);
-            memcpy(target, source, size);
-            return true;
-        }
-        else {
+    if (!have_lock(transaction, seg->lock)) {
+        if (!seg->lock->try_lock()) {
             rollback(transaction, region);
             cleanup(transaction);
             return false;
         }
-    } 
+        else transaction->read_locks.push_back(seg->lock); 
+    }
+    memcpy(target, source, size);
+    return true;
 }
 
 /** [thread-safe] Write operation in the given transaction, source in a private region and target in the shared region.
@@ -371,35 +367,21 @@ bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* t
         cleanup(transaction);
         return false;
     }
-    // If I acquired the lock, log and perform the write
-    if (have_lock(transaction, seg->lock)) {
-        write_log_t* write_log = new write_log_t();
-        write_log->address = target;
-        write_log->old_data = malloc(size);
-        memcpy(write_log->old_data, source, size);
-        write_log->size = size;    
-        memcpy(target, source, size);
-        return true;
-    }
-    // Try to acquire
-    // Store write lock and log and perform the write if successful, otherwise rollback and abort
-    else {
-        if (seg->lock->try_lock()) {
-            transaction->write_locks.push_back(seg->lock);
-            write_log_t* write_log = new write_log_t();
-            write_log->address = target;
-            write_log->old_data = malloc(size);
-            memcpy(write_log->old_data, source, size);
-            write_log->size = size;    
-            memcpy(target, source, size);
-            return true;
-        }
-        else {
+    if (!have_lock(transaction, seg->lock)) {
+        if (!seg->lock->try_lock()) {
             rollback(transaction, region);
             cleanup(transaction);
             return false;
-        }    
+        }
+        else transaction->write_locks.push_back(seg->lock); 
     }
+    write_log_t* write_log = new write_log_t();
+    write_log->address = target;
+    write_log->old_data = malloc(size);
+    memcpy(write_log->old_data, source, size);
+    write_log->size = size;
+    transaction->write_logs.push_back(write_log);    
+    memcpy(target, source, size);
     return true;
 }
 
@@ -451,14 +433,14 @@ bool tm_free(shared_t shared, tx_t tx, void* target) noexcept {
     // If I acquired the lock, add free lock and remember that we have to free 
     if (have_lock(transaction, free_segment->lock)) {
         transaction->free_locks.push_back(free_segment->lock);
-        transaction->free_segments.push_back(free_segment->lock);
+        transaction->free_segments.push_back(free_segment);
     }
     // Try to acquire
     // Add free lock and remember that we have to free if successful, otherwise rollback and abort
     else {
         if (free_segment->lock->try_lock()) {
             transaction->free_locks.push_back(free_segment->lock);
-            transaction->free_segments.push_back(free_segment->lock);
+            transaction->free_segments.push_back(free_segment);
         }
         else {
             rollback(transaction, region);
@@ -466,7 +448,5 @@ bool tm_free(shared_t shared, tx_t tx, void* target) noexcept {
             return false;
         }
     }
-    
     return true;
-
 }
