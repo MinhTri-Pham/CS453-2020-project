@@ -330,7 +330,7 @@ bool tm_end(shared_t shared, tx_t tx) noexcept {
 bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* target) noexcept{
     region_t* region = (region_t*) shared;
     transaction_t* transaction = (transaction_t*) tx;
-    segment_t* seg = find_seg(region, transaction, source);
+    segment_t* seg = find_seg(region, source);
     // Rollback if trying to read memory that doesn't exist
     if (unlikely(!seg)) {
         rollback(transaction, region);
@@ -360,7 +360,7 @@ bool tm_read(shared_t shared, tx_t tx, void const* source, size_t size, void* ta
 bool tm_write(shared_t shared, tx_t tx, void const* source, size_t size, void* target) noexcept {
     region_t* region = (region_t*) shared;
     transaction_t* transaction = (transaction_t*) tx;
-    segment_t* seg = find_seg(region, transaction, target);
+    segment_t* seg = find_seg(region, target);
     // Fail and rollback if trying to write into memory that doesn't exist
     if (unlikely(!seg)) {
         rollback(transaction, region);
@@ -423,7 +423,7 @@ Alloc tm_alloc(shared_t shared, tx_t tx, size_t size, void** target) noexcept {
 bool tm_free(shared_t shared, tx_t tx, void* target) noexcept {
     region_t* region = (region_t*) shared;
     transaction_t* transaction = (transaction_t*) tx;
-    segment_t* free_segment = find_seg(region, transaction, target);
+    segment_t* free_segment = find_seg(region, target);
     // Trying to free nonexistent memory, rollback and abort
     if (unlikely(!free_segment)) {
         rollback(transaction, region);
