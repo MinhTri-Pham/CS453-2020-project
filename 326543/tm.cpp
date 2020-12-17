@@ -1,6 +1,6 @@
 /**
  * @file   tm.cpp
- * @author [...]
+ * @author Minh Tri Pham
  *
  * @section LICENSE
  *
@@ -122,7 +122,8 @@ segment_t* find_seg(region_t* region, transaction_t* tx, const void* target) {
         if(target >= seg->start && target < seg->start + seg->size) {
             return seg;
         }
-    } 
+    }
+    return NULL; 
 }
 
 
@@ -249,7 +250,7 @@ size_t tm_align(shared_t shared) noexcept {
 **/
 tx_t tm_begin(shared_t shared, bool is_ro) noexcept {
     transaction_t* tx = new transaction_t();
-    if(unlikely(tx == NULL)){
+    if(unlikely(!tx)){
        return invalid_tx;
     }
     tx->region = (region_t*) shared;
